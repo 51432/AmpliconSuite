@@ -65,7 +65,7 @@ Can be used on most modern Unix systems (e.g. Ubuntu 18.04+, CentOS 7+, macOS). 
 3. Lastly, obtain the Mosek optimization tool license (free for academic use) and place it in `$HOME/mosek/`. AA will not work without it. 
 
 
-### Option D: Singularity & Docker images 
+### Option D: Singularity & Docker imag
 Containerized versions of AmpliconSuite-pipeline are available for Singularity and Docker.
 
 1. Obtain the AmpliconSuite-pipeline image from the options below:
