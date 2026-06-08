@@ -1,4 +1,6 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+
+# This python script is the driver for launching the AmpliconSuite-pipeline singularity image
 
 import argparse
 import json
@@ -7,11 +9,15 @@ import subprocess
 from subprocess import call
 import sys
 
+
+DATA_REPO_BASE_URL = "https://refs.ampliconrepository.org/data/module_support_files/AmpliconArchitect/"
+
+
 # check singularity version
 def test_singularity_version():
     singularity_version = subprocess.check_output(['singularity', '--version']).decode().strip().lower().rsplit("version")[1]
-    major, minor, patch = map(int, singularity_version.split('.')[0:3])
-    assert (major, minor, patch) >= (3, 6, 0),'Singularity version {singularity_version} is not supported. Please upgrade to version 3.6.0 or higher.'
+    major, minor = map(int, singularity_version.split('.')[0:2])
+    assert (major, minor) >= (3, 6),'Singularity version {} is not supported. Please upgrade to version 3.6 or higher.'.format(singularity_version)
 
 
 def metadata_helper(metadata_args):
@@ -39,10 +45,9 @@ def metadata_helper(metadata_args):
 
 # Parses the command line arguments
 parser = argparse.ArgumentParser(
-    description="A simple pipeline wrapper for AmpliconArchitect, invoking alignment, variant calling, "
-    "and CNV calling prior to AA. The CNV calling is necesary for running AA")
-parser.add_argument("--sif", help="location of the ampliconsuite-pipeline.sif file.Only required if .sif file not in "
-                                  "cache", type=str)
+    description="A simple pipeline wrapper for AmpliconArchitect and AmpliconClassifier, invoking alignment "
+                "and CNV calling prior to AA.")
+parser.add_argument("--sif", help="Path of the ampliconsuite-pipeline.sif file.", type=str, required=True)
 parser.add_argument("-o", "--output_directory",
                     help="output directory names (will create if not already created)")
 parser.add_argument("-s", "--sample_name", help="sample name", required=True)
@@ -53,13 +58,13 @@ parser.add_argument("--run_AC", help="Run AmpliconClassifier after all files pre
                     action='store_true')
 parser.add_argument("--ref", help="Reference genome version.",
                     choices=["hg19", "GRCh37", "GRCh38", "GRCh38_viral", "hg38", "mm10", "GRCm38"])
-# parser.add_argument("--vcf", help="VCF (in Canvas format, i.e., \"PASS\" in filter field, AD field as 4th entry of "
-# 								  "FORMAT field). When supplied with \"--sorted_bam\", pipeline will start from Canvas CNV stage."
-# 					)
 parser.add_argument("--cngain", type=float,
                     help="CN gain threshold to consider for AA seeding", default=4.5)
 parser.add_argument("--cnsize_min", type=int, help="CN interval size (in bp) to consider for AA seeding",
                     default=50000)
+parser.add_argument("--no_cstats",
+                    help="Do not read from or write to the $AA_DATA_REPO/coverage.stats file. (default not set).",
+                    action='store_true')
 parser.add_argument("--downsample", type=float,
                     help="AA downsample argument (see AA documentation)", default=10)
 
@@ -70,6 +75,13 @@ parser.add_argument("--AA_extendmode", help="If --run_AA selected, set the --ext
 parser.add_argument("--AA_insert_sdevs", help="Number of standard deviations around the insert size. May need to "
                     "increase for sequencing runs with high variance after insert size selection step. (default "
                     "3.0)", type=float, default=None)
+parser.add_argument('--pair_support_min', dest='pair_support_min', help="Number of read pairs for "
+                        "minimum breakpoint support (default 2 but typically becomes higher due to coverage-scaled "
+                        "cutoffs)", metavar='INT', action='store', type=int)
+parser.add_argument('--foldback_pair_support_min', help="Number of read pairs for minimum foldback SV support "
+                        "(default 2 but typically becomes higher due to coverage-scaled cutoffs). Used value will be the maximum"
+                        " of pair_support and this argument. Raising to 3 will help dramatically in heavily artifacted samples.",
+                        metavar='INT', action='store', type=int)
 parser.add_argument(
     "--normal_bam", help="Path to matched normal bam for CNVKit (optional)", default=None)
 parser.add_argument("--ploidy", type=int,
@@ -79,27 +91,25 @@ parser.add_argument("--purity", type=float,
 parser.add_argument("--cnvkit_segmentation", help="Segmentation method for CNVKit (if used), defaults to CNVKit default"
                     " segmentation method (cbs).", choices=['cbs', 'haar', 'hmm', 'hmm-tumor', 'hmm-germline', 'none'],
                     default='cbs')
-parser.add_argument("--no_filter", help="Do not run amplified_intervals.py to identify amplified seeds",
-                                        action='store_true')
+parser.add_argument("--no_filter", help="Do not run amplified_intervals.py to remove low confidence candidate seed"
+                                            " regions overlapping repetitive parts of the genome", action='store_true')
 parser.add_argument("--align_only", help="Only perform the alignment stage (do not run CNV calling and seeding",
                     action='store_true')
-parser.add_argument("--cnv_bed", help="BED file (or CNVKit .cns file) of CNV changes. Fields in the bed file should"
+parser.add_argument("--cnv_bed", "--bed", help="BED file (or CNVKit .cns file) of CNV changes. Fields in the bed file should"
                     " be: chr start end name cngain", default="")
-# parser.add_argument("--run_as_user", help="Run the docker image as the user launching this script. Alternatively, instead of setting this flag"
-#                     " one can also rebuild the docker image using docker build . -t jluebeck/prepareaa:latest --build-arg set_uid=$UID --build-arg set_gid=$(id -g) ",
-#                     action='store_true')
 parser.add_argument(
     "--no_QC", help="Skip QC on the BAM file.", action='store_true')
-# parser.add_argument(
-#     '--ref_path', help="Path to reference Genome. Won't download reference genome if provided.", default="None")
-# parser.add_argument(
-#     '--AA_seed', help='Seeds that sets randomness for AA', default=0)
-parser.add_argument(
-    '--metadata', help="Path to a JSON of sample metadata to build on", default="", nargs="+")
+parser.add_argument("--sv_vcf", help="Provide a VCF file of externally-called SVs to augment SVs identified by AA internally.",
+                    metavar='FILE', action='store', type=str)
+parser.add_argument("--sv_vcf_no_filter", help="Use all external SV calls from the --sv_vcf arg, even "
+                    "those without 'PASS' in the FILTER column.", action='store_true', default=False)
+parser.add_argument('--sv_vcf_include_sr',
+                    help="Include single-ended reads when counting support for an SV in the provided VCF",
+                    action='store_true', default=False)
+parser.add_argument('--metadata', help="Path to a JSON of sample metadata to build on", default="", nargs="+")
 
-# parser.add_argument("--sample_metadata", help="Path to a JSON of sample metadata to build on")
 group = parser.add_mutually_exclusive_group(required=True)
-group.add_argument("--sorted_bam", "--bam",
+group.add_argument("--bam", "--sorted_bam",
                    help="Coordinate-sorted BAM file (aligned to an AA-supported reference.)")
 group.add_argument("--fastqs", help="Fastq files (r1.fq r2.fq)", nargs=2)
 group.add_argument("--completed_AA_runs", help="Path to a directory containing one or more completed AA runs which "
@@ -108,18 +118,15 @@ group.add_argument("--completed_AA_runs", help="Path to a directory containing o
 args = parser.parse_args()
 test_singularity_version()
 
-if args.sif and not args.sif.endswith("ampliconsuite-pipeline.sif"):
-    if not args.sif.endswith("/"): args.sif+="/"
-    args.sif+="ampliconsuite-pipeline.sif"
-
-else:
-    args.sif = "ampliconsuite-pipeline.sif"
+if args.sif and not args.sif.endswith(".sif"):
+    sys.stderr.write("Path of .sif file must go to .sif file!\n")
+    sys.exit(1)
 
 if args.ref == "hg38": args.ref = "GRCh38"
 if args.ref == "GRCm38": args.ref = "mm10"
 if (args.fastqs or args.completed_AA_runs) and not args.ref:
     sys.stderr.write(
-        "Must specify --ref when providing unaligned fastq files.")
+        "Must specify --ref when providing unaligned fastq files.\n")
     sys.exit(1)
 
 if not args.output_directory:
@@ -142,7 +149,7 @@ call(cmd, shell=True)
 
 if 'AA_DATA_REPO' in os.environ:
     AA_REPO = os.environ['AA_DATA_REPO'] + "/"
-    if not os.path.exists(os.path.join(AA_REPO, "coverage.stats")):
+    if not args.no_cstats and not os.path.exists(os.path.join(AA_REPO, "coverage.stats")):
         print("coverage.stats file not found in " + AA_REPO +
               "\nCreating a new coverage.stats file.")
         cmd = "touch {}coverage.stats && chmod a+rw {}coverage.stats".format(
@@ -157,6 +164,7 @@ else:
 
 
 if not os.path.exists(os.environ['HOME'] + "/mosek/mosek.lic"):
+    sys.stdout.write("Python detected $HOME was set to: " + os.environ['HOME'])
     sys.stderr.write(
         "Mosek license (mosek.lic) file not found in $HOME/mosek/. Please see README for instructions.\n")
     sys.exit(1)
@@ -168,17 +176,16 @@ cnvdir = os.path.realpath(cnvdir)
 # assemble an argstring
 argstring = "-t " + str(args.nthreads) + " --cngain " + str(args.cngain) + " --cnsize_min " + \
     str(args.cnsize_min) + " --downsample " + str(args.downsample) + " -s " + args.sample_name + \
-    " --AA_extendmode " + args.AA_extendmode + " --AA_runmode " + args.AA_runmode + \
-    " --AA_insert_sdevs " + str(args.AA_insert_sdevs)
+    " --AA_extendmode " + args.AA_extendmode + " --AA_runmode " + args.AA_runmode
 
 if args.ref:
     argstring += " --ref " + args.ref
 
-if args.sorted_bam:
-    args.sorted_bam = os.path.realpath(args.sorted_bam)
-    bamdir, bamname = os.path.split(args.sorted_bam)
+if args.bam:
+    args.bam = os.path.realpath(args.bam)
+    bamdir, bamname = os.path.split(args.bam)
     norm_bamdir = bamdir
-    argstring += " --sorted_bam /home/bam_dir/" + bamname
+    argstring += " --bam /home/bam_dir/" + bamname
 
 elif args.fastqs:
     args.fastqs[0], args.fastqs[1] = os.path.realpath(
@@ -189,14 +196,42 @@ elif args.fastqs:
     argstring += " --fastqs /home/bam_dir/" + fq1name + " /home/bam_dir/" + fq2name
 
 else:
-    argstring += " --completed_AA_runs /home/bam_dir/ --completed_run_metadata None"
-    bamdir = os.path.realpath(args.completed_AA_runs)
+    # Resolve the full path first to handle symlinks
+    resolved_input_path = os.path.realpath(args.completed_AA_runs)
+
+    # Check if completed_AA_runs is a file or directory on the host
+    if os.path.isfile(resolved_input_path):
+        # It's a file - mount parent directory and specify the file path in container
+        host_dir = os.path.dirname(resolved_input_path)
+        filename = os.path.basename(resolved_input_path)
+        container_file_path = "/home/bam_dir/{}".format(filename)
+
+        argstring += " --completed_AA_runs {} --completed_run_metadata None".format(container_file_path)
+        bamdir = host_dir  # Already resolved, no symlinks
+
+    else:
+        # It's a directory - mount the whole directory
+        argstring += " --completed_AA_runs /home/bam_dir/ --completed_run_metadata None"
+        bamdir = resolved_input_path  # Already resolved, no symlinks
+
     norm_bamdir = bamdir
 
 if args.normal_bam:
     args.normal_bam = os.path.realpath(args.normal_bam)
     norm_bamdir, norm_bamname = os.path.split(args.normal_bam)
     argstring += " --normal_bam /home/norm_bam_dir/" + norm_bamname
+
+if args.sv_vcf:
+    args.sv_vcf = os.path.realpath(args.sv_vcf)
+    vcf_dir, vcf_name = os.path.split(args.sv_vcf)
+    argstring += " --sv_vcf /home/vcf_dir/" + vcf_name
+    if args.sv_vcf_no_filter:
+        argstring += " --sv_vcf_no_filter"
+    if args.sv_vcf_include_sr:
+        argstring += " --sv_vcf_include_sr"
+
+else:
+    vcf_dir = bamdir
 
 if args.ploidy:
     argstring += " --ploidy " + str(args.ploidy)
@@ -219,16 +254,20 @@ if args.cnvkit_segmentation:
 if args.no_filter:
     argstring += " --no_filter"
 
+if args.no_cstats:
+    argstring += " --no_cstats"
+
 if args.no_QC:
     argstring += " --no_QC"
 
 if args.AA_insert_sdevs:
     argstring += " --AA_insert_sdevs " + str(args.AA_insert_sdevs)
 
-# To use, would need to mount the directory of this file. Users should just modify as needed afterwards.
-# if args.sample_metadata:
-# 	args.sample_metadata = os.path.abspath(args.sample_metadata)
-# 	argstring += " --sample_metadata " + args.sample_metadata
+if args.pair_support_min:
+    argstring += " --pair_support_min " + str(args.pair_support_min)
+
+if args.foldback_pair_support_min:
+    argstring += " --foldback_pair_support_min " + str(args.foldback_pair_support_min)
 
 if args.run_AA:
     argstring += " --run_AA"
@@ -239,14 +278,11 @@ if args.run_AC:
 if args.metadata != "":
     metadata_helper(args.metadata)
     argstring += " --sample_metadata /home/metadata.json"
-#
-# os.environ['AA_SEED'] = str(args.AA_seed)
 
-# userstring = ""
-# if args.run_as_user:
-#     userstring = " -e HOST_UID=$(id -u) -e HOST_GID=$(id -g) -u $(id -u):$(id -g)"
+env_outname = "paa_envs_" + args.sample_name + ".txt"
+runscript_outname = "paa_singularity_" + args.sample_name + ".sh"
 
-with open("paa_singularity.sh", 'w') as outfile:
+with open(runscript_outname, 'w') as outfile:
     outfile.write("#!/bin/bash\n\n")
     outfile.write("export argstring=\"" + argstring + "\"\n")
     outfile.write("export SAMPLE_NAME=" + args.sample_name + "\n")
@@ -260,33 +296,31 @@ with open("paa_singularity.sh", 'w') as outfile:
         outfile.write('export AA_DATA_REPO=' + data_repo_d + '\n')
         if args.fastqs:
             outfile.write(
-                'wget -q -P $AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{}_indexed.tar.gz\n'.format(args.ref))
+                'wget -q -P $AA_DATA_REPO {}{}_indexed.tar.gz\n'.format(DATA_REPO_BASE_URL, args.ref))
             outfile.write(
-                'wget -q -P $AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{}_indexed_md5sum.txt\n'.format(args.ref))
+                'wget -q -P $AA_DATA_REPO {}{}_indexed_md5sum.txt\n'.format(DATA_REPO_BASE_URL, args.ref))
             outfile.write(
                 'tar zxf $AA_DATA_REPO/{}_indexed.tar.gz --directory $AA_DATA_REPO\n'.format(args.ref))
 
         else:
             outfile.write(
-                'wget -q -P $AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{}.tar.gz\n'.format(
-                    args.ref))
+                'wget -q -P $AA_DATA_REPO {}{}.tar.gz\n'.format(DATA_REPO_BASE_URL, args.ref))
             outfile.write(
-                'wget -q -P $AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{}_md5sum.txt\n'.format(
-                    args.ref))
+                'wget -q -P $AA_DATA_REPO {}{}_md5sum.txt\n'.format(DATA_REPO_BASE_URL, args.ref))
             outfile.write(
                 'tar zxf $AA_DATA_REPO/{}.tar.gz --directory $AA_DATA_REPO\n'.format(args.ref))
 
-        outfile.write(
-            'touch $AA_DATA_REPO/coverage.stats && chmod a+rw $AA_DATA_REPO/coverage.stats\n')
+        if not args.no_cstats:
+            outfile.write(
+                'touch $AA_DATA_REPO/coverage.stats && chmod a+rw $AA_DATA_REPO/coverage.stats\n')
         outfile.write('echo DOWNLOADING {} COMPLETE\n'.format(args.ref))
 
     elif no_data_repo and not args.ref:
-        sys.stderr.write("Must specify --ref argument!")
+        sys.stderr.write("Must specify --ref argument!\n")
         sys.exit(1)
 
     # write exported envs to env-file
-    env_outname = "paa_envs_" + args.sample_name + ".txt"
-    with open("env_outname", 'w') as env_file:
+    with open(env_outname, 'w') as env_file:
         env_file.write('argstring="' + argstring + '"\n')
         env_file.write("SAMPLE_NAME=" + args.sample_name)
 
@@ -294,16 +328,16 @@ with open("paa_singularity.sh", 'w') as outfile:
     sing_string = "singularity exec --no-home --cleanenv --env-file " + env_outname + " --bind $AA_DATA_REPO:" \
                   "/home/data_repo --bind " + bamdir + ":/home/bam_dir --bind " + norm_bamdir + ":/home/norm_bam_dir " \
                   "--bind " + cnvdir + ":/home/bed_dir --bind " + args.output_directory + ":/home/output --bind " \
-                  "$HOME/mosek:/home/mosek/ " + args.sif + " bash /home/run_paa_script.sh "
+                  "$HOME/mosek:/home/mosek/ --bind " + vcf_dir + ":/home/vcf_dir " + args.sif + " bash /home/internal_singularity_script.sh "
 
     print("\n" + sing_string + "\n")
     outfile.write(sing_string)
 
 outfile.close()
 
-call("chmod +x ./paa_singularity.sh", shell=True)
-call("./paa_singularity.sh", shell=True)
-call("rm paa_singularity.sh", shell=True)
+call("chmod +x ./" + runscript_outname, shell=True)
+call("./" + runscript_outname, shell=True)
+call("rm " + runscript_outname, shell=True)
 call("rm -f " + env_outname, shell=True)
 if no_data_repo:
     cmd = "rm -rf " + data_repo_d

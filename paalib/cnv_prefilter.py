@@ -45,11 +45,14 @@ def ivald_to_ilist(ivald):
 
 # takes list of tuples (chrom, start, end, cn)
 def compute_cn_median(cnlist, armlen):
-    cnsum = sum([x[2]-x[1] for x in cnlist])
-    if cnsum < 0.5 * armlen:
+    if armlen == 0:
         return 2.0
 
-    halfn = cnsum/2.0
+    cnlensum = sum([x[2]-x[1] for x in cnlist])
+    if cnlensum < 0.5 * armlen:
+        return 2.0
+
+    halfn = cnlensum/2.0
     scns = sorted(cnlist, key=lambda x: x[3])
     rt = 0
     ccn = 0
@@ -133,9 +136,12 @@ def prefilter_bed(bedfile, ref, centromere_dict, chr_sizes, cngain, outdir):
     with open(bedfile) as infile:
         for line in infile:
             fields = line.rstrip().rsplit("\t")
-            c, s, e = fields[0], int(fields[1]), int(fields[2]) + 1
+            c, s, e = fields[0], int(fields[1]), int(fields[2])
             if c == "hs37d5":
                 continue
+
+            if s == e:
+                e += 1
 
             cn = float(fields[-1])
             a = region_ivald[c][(s + e)//2]
@@ -147,10 +153,9 @@ def prefilter_bed(bedfile, ref, centromere_dict, chr_sizes, cngain, outdir):
                 carm = carm_interval.data
                 arm2cns[carm].append((c, s, e, cn))
                 arm2lens[carm] = carm_interval.end - carm_interval.begin
-
             else:
                 arm2cns["other"].append((c, s, e, cn))
-                logging.debug("Did not match " + c + ":" + str(s) + "-" + str(e) + " to a known chromosome arm!")
+                # logging.debug("Did not match " + c + ":" + str(s) + "-" + str(e) + " to a known chromosome arm!")
 
     continuous_high_region_ivald = get_continuous_high_regions(bedfile, cngain)
     cn_filt_entries = []
@@ -198,7 +203,7 @@ def prefilter_bed(bedfile, ref, centromere_dict, chr_sizes, cngain, outdir):
 
     merged_filt_ivald = merge_intervals(filt_ivald, cn_cut=cngain, require_same_cn=True, ref=ref)
     final_filt_entries = ivald_to_ilist(merged_filt_ivald)
-    bname = outdir + "/" + bedfile.rsplit("/")[-1].rsplit(".bed")[0] + "_pre_filtered.bed"
+    bname = outdir + "/" + bedfile.rsplit("/")[-1].rsplit(".bed")[0] + "_unfiltered_gains.bed"
     with open(bname, 'w') as outfile:
         for entry in final_filt_entries:
             outfile.write("\t".join([str(x) for x in entry]) + "\n")

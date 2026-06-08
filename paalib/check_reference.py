@@ -48,18 +48,26 @@ def get_bam_header(bamf, samtools):
 def extract_seq_info(bam_header):
     bamSeqLenD = defaultdict(int)
     linelist = bam_header.rsplit("\n")
+    altFound = False
     for line in (x for x in linelist if x.startswith("@SQ")):
         fields = line.rstrip().rsplit()[1:]
         ld = {i.rsplit(":")[0]: i.rsplit(":")[1] for i in fields if ":" in i}
         bamSeqLenD[ld["SN"]] = int(ld["LN"])
+        if ld["SN"].endswith("_alt"):
+            altFound = True
+
+    if altFound:
+        logging.warning("WARNING: Alt contigs detected in bam header. If BAM alignment was not alt-aware, AA results may be incorrect!\n")
 
     return bamSeqLenD
 
 
-# check if bam matches to a reference genome in terms of length and sequence name
-# returns false if the same chromosome has different length in bam vs. reference
-# returns false if no chromosome names are shared between bam/reference
-# returns true if no shared chromosomes have different lengths and at least one chromosome is present.
+""" 
+check if bam matches to a reference genome in terms of length and sequence name
+returns false if the same chromosome has different length in bam vs. reference
+returns false if no chromosome names are shared between bam/reference
+returns true if no shared chromosomes have different lengths and at least one chromosome is present.
+"""
 def match_ref(bamSeqLenD, ref_len_d):
     overlaps = 0
     for chrom, len in ref_len_d.items():
@@ -75,21 +83,33 @@ def match_ref(bamSeqLenD, ref_len_d):
 # check properly paired rate on bam file
 def check_properly_paired(bamf, samtools):
     cmd = samtools + " flagstat {} | grep 'properly paired'".format(bamf)
-    t = str(subprocess.check_output(cmd, shell=True).decode("utf-8"))
-    logging.info("\n" + bamf + ": " + t.rstrip())
+    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
+    exit_code = process.returncode
+
+    # Convert stdout to a string (in Python 3 it is already a string, but in Python 2 it is bytes)
+    t = stdout.decode("utf-8") if isinstance(stdout, bytes) else stdout
+
+    logging.info(bamf + ": " + t.rstrip() + "\n")
+    if int(exit_code) != 0:
+        em = stderr.decode("utf-8") if isinstance(stderr, bytes) else stderr
+        logging.error(em)
+        logging.error("Samtools flagstat returned a non-zero exit code or reported no information on properly paired reads! "
+                      "This indicates a significant problem with your bam file.")
+        sys.exit(1)
+
     ppp = float(t.rsplit("(")[-1].rsplit("%")[0])
     if t.startswith("0 + 0"):
-        logging.error("\nERROR: IMPROPERLY GENERATED BAM FILE! No properly-paired reads were found. The most common "
-                         "reason for this behavior is that the reference genome contained alt contigs that were not "
-                         "indicated to the aligner. You must re-align to use AA (and many other bioinformatic tools) on"
-                         " this data.\n\n")
+        logging.error("ERROR: UNSUITABLE BAM FILE! No properly-paired reads were found by samtools. "
+                         "AmpliconSuite-pipeline requires paired-end sequencing data. AA requires paired-end WGS. If "
+                      "this was PE WGS, please confirm your alignment steps were done appropriately\n\n")
         sys.exit(1)
 
     elif ppp < 95:
-        logging.warning("WARNING: BAM FILE PROPERLY PAIRED RATE IS BELOW 95%.\nQuality of data may be insufficient for AA "
-              "analysis. Poorly controlled insert size distribution during sample prep can cause high fractions of read"
-              " pairs to be marked as discordant during alignment. Artifactual short SVs and long runtimes may occur!"
-              "\n")
+        logging.warning("WARNING: BAM FILE PROPERLY PAIRED RATE ({}%) IS BELOW RECOMMENDED 95%.\nQuality of data may be insufficient for AA "
+              "analysis. Poorly controlled insert size distribution during library prep can cause high fractions of read"
+              " pairs marked as discordant during alignment. Artifactual short SVs and long runtimes may occur!"
+              "\n".format(str(ppp)))
 
     return ppp
 
@@ -121,12 +141,12 @@ def check_ref(bamf, ref_to_fai_dict, samtools):
     em2 = """This may happen if 1) The value provided to optional argument '--ref' does not match the 
           reference the BAM is aligned to, or 2) The corresponding AA data repo folder for this reference 
           is not present, or 3) The BAM uses a different chromosome naming convention (e.g. accession 
-          numbers instead of chromosome names). Consider inspecting the header of the BAM file and the AA  
-          data repo directory.\n"""
+          numbers instead of chromosome names). Consider inspecting the header of the BAM file and the AA data repo 
+          directory. Additional data repo reference genomes can be acquired by running with --download_repo [ref]\n"""
 
     logging.error(em1)
     logging.error(em2)
-    sys.stderr.write(em1)
-    sys.stderr.write(em2)
+    # sys.stderr.write(em1)
+    # sys.stderr.write(em2)
 
     return None

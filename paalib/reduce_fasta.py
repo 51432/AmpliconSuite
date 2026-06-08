@@ -2,6 +2,7 @@
 
 import argparse
 from itertools import groupby
+import logging
 import os
 import sys
 
@@ -25,18 +26,30 @@ def getRelChrs(CHROMS):
 
 def fasta_reader(fasta_file, chroms_to_get):
     fasta_dict = {}
-    print("Reading FASTA: {}".format(fasta_file))
+    logging.info("Reading FASTA: {}".format(fasta_file))
     with open(fasta_file) as infile:
         faiter = (x[1] for x in groupby(infile, lambda line: line[0] == ">"))
         for header in faiter:
             # drop the ">"
             seq_name = next(header)[1:].rstrip().rsplit()[0]
-            if (seq_name in chroms_to_get):
+            if seq_name in chroms_to_get:
                 # join all sequence lines to one.
                 seq = "".join(s.strip() for s in next(faiter))
                 fasta_dict[seq_name] = seq
 
     return fasta_dict
+
+
+def reduce_fasta(ref, chrom, outname=""):
+    chrList = getRelChrs(chrom)
+    seqD = fasta_reader(ref, chrList)
+    base = os.path.basename(ref)
+    refGOutName = os.path.splitext(base)[0] + "_reduced" + "".join(os.path.splitext(base)[1:])
+    logging.info("Writing stripped FASTA\n")
+    with open(outname + refGOutName, 'w') as outfile:
+        for i in chrList:
+            outfile.write(">" + i + "\n")
+            outfile.write(seqD[i] + "\n")
 
 
 if __name__ == '__main__':
@@ -50,14 +63,6 @@ if __name__ == '__main__':
     if not args.outname:
         args.outname = ""
 
-    chrList = getRelChrs(args.chrom)
-    seqD = fasta_reader(args.ref, chrList)
-    base = os.path.basename(args.ref)
-    refGOutName = os.path.splitext(base)[0] + "_reduced" + "".join(os.path.splitext(base)[1:])
-    print("Writing stripped FASTA\n")
-    with open(args.outname + refGOutName, 'w') as outfile:
-        for i in chrList:
-            outfile.write(">" + i + "\n")
-            outfile.write(seqD[i] + "\n")
-
+    logging.basicConfig(format='[%(name)s:%(levelname)s]\t%(message)s', level=logging.INFO)
+    reduce_fasta(args.ref, args.chrom, args.outname)
     sys.exit()
