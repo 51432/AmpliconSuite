@@ -4,11 +4,7 @@
 
 AmpliconSuite-pipeline 是一个面向肿瘤基因组扩增分析的端到端命令行流程。它把 [AmpliconArchitect](https://github.com/jluebeck/AmpliconArchitect) 以及配套的数据准备、种子区域筛选和结果解释工具串联起来，帮助用户从测序数据中寻找并解析局灶性扩增结构，例如 ecDNA（extrachromosomal DNA，染色体外 DNA）和 BFB（breakage-fusion-bridge，断裂-融合-桥）等模式。
 
-这个项目以前叫 **PrepareAA**。如果你在旧教程、脚本或论文中看到 PrepareAA，通常指的就是现在的 AmpliconSuite-pipeline。
-
 **当前版本：0.1546.0**
-
-> 版本号规则：`主版本号.距离首次提交的天数.次版本号`。首次提交日期为 2019 年 3 月 5 日。
 
 如果你已经熟悉英文文档，也推荐阅读项目的 [详细英文指南](https://github.com/jluebeck/PrepareAA/blob/master/GUIDE.md)，其中包含最佳实践和常见问题。
 
@@ -57,18 +53,6 @@ AmpliconSuite-pipeline 主要负责把运行 AmpliconArchitect 前后需要的�
 
 ---
 
-## 适合谁使用
-
-本 README 面向以下用户：
-
-- 第一次接触 AmpliconSuite、AmpliconArchitect 或 ecDNA 分析的新手。
-- 有肿瘤 WGS/WES/靶向测序数据，希望分析局灶性扩增结构的研究者。
-- 希望在本地服务器、集群、Docker 或 Singularity 中运行流程的用户。
-
-如果你只想少量测试非敏感样本，可以优先考虑 GenePattern Web 界面。如果你需要处理大量样本、受保护健康信息（PHI）或想使用高级参数，建议本地安装或容器运行。
-
----
-
 ## 支持的参考基因组
 
 AmpliconSuite-pipeline 支持以下参考基因组名称：
@@ -77,8 +61,18 @@ AmpliconSuite-pipeline 支持以下参考基因组名称：
 | --- | --- |
 | `hg19` | 人类 hg19 |
 | `GRCh37` | 人类 GRCh37 |
+```bash
+cd $AA_DATA_REPO
+wget -c https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/GRCh37_indexed.tar.gz
+```
 | `GRCh38` / `hg38` | 人类 GRCh38/hg38 |
+```bash
+wget -c https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/GRCh38_indexed.tar.gz
+```
 | `GRCh38_viral` | 项目提供的人类-病毒混合参考基因组，可用于检测肿瘤病毒相关的混合扩增和 ecDNA |
+```bash
+wget -c https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/GRCh38_viral_indexed.tar.gz
+```
 | `mm10` / `GRCm38` | 小鼠 mm10/GRCm38 |
 
 使用 `GRCh38_viral` 时请注意：
@@ -167,24 +161,13 @@ bash install.sh --finalize
 
 ---
 
-### 方式 C：使用安装脚本进行本地安装
-
-这种方式适合希望直接在服务器或工作站上运行的用户。
-
-#### 第 1 步：下载源码并运行安装脚本
-
-```bash
-git clone https://github.com/AmpliconSuite/AmpliconSuite-pipeline
-cd AmpliconSuite-pipeline
-
-# 可选：先查看安装帮助
-./install.sh -h
-
-# 安装 AmpliconArchitect、AmpliconClassifier 和依赖项
-./install.sh
-```
-
 默认情况下，安装脚本会把 AA 数据仓库放在你的 `$HOME` 目录下。安装完成后，通常会设置或提示你设置 `AA_DATA_REPO` 等环境变量。
+
+也可以自定义路径
+```bash
+echo 'export AA_DATA_REPO=/data/person/wup/public/liusy_files/reference_genomes/hg38/data_repo' >> ~/.bashrc
+source ~/.bashrc
+```
 
 #### 第 2 步：下载 AA 参考数据
 
@@ -197,9 +180,9 @@ cd AmpliconSuite-pipeline
 
 ```bash
 cd $AA_DATA_REPO
-wget [reference_build_url]
-tar -xzf [reference_build].tar.gz
-rm [reference_build].tar.gz
+wget -c https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/GRCh38_viral_indexed.tar.gz
+tar -xzf GRCh38_viral_indexed.tar.gz
+rm GRCh38_viral_indexed.tar.gz
 ```
 
 文件名中带 `_indexed` 的版本包含 BWA index，只有当你要从 FASTQ 开始运行时才需要。
@@ -215,59 +198,6 @@ $HOME/mosek/
 如果 AA 报错提示找不到 Mosek license，优先检查这个目录和许可证文件权限。
 
 ---
-
-### 方式 D：使用 Singularity 或 Docker 容器
-
-容器方式可以减少依赖冲突，适合服务器、集群和可复现分析。
-
-#### 第 1 步：获取镜像
-
-**Singularity**
-
-- 安装说明：<https://docs.sylabs.io/guides/3.0/user-guide/installation.html>
-- 需要 Singularity 3.6 或更高版本。
-- 拉取镜像：
-
-```bash
-singularity pull library://jluebeck/ampliconsuite-pipeline/ampliconsuite-pipeline
-```
-
-**Docker**
-
-- 安装说明：<https://docs.docker.com/install/>
-- 拉取镜像：
-
-```bash
-docker pull jluebeck/prepareaa
-```
-
-可选：把当前用户加入 docker 组，避免每次都使用 `sudo`：
-
-```bash
-sudo usermod -a -G docker $USER
-```
-
-执行后需要退出并重新登录。
-
-#### 第 2 步：下载执行脚本并配置数据仓库
-
-```bash
-git clone https://github.com/AmpliconSuite/AmpliconSuite-pipeline
-cd AmpliconSuite-pipeline
-
-# 可选：查看帮助
-./install.sh -h
-
-# 配置数据仓库路径和 Mosek 许可证目录
-./install.sh --finalize
-```
-
-#### 第 3 步：准备 Mosek 许可证
-
-容器运行同样需要 Mosek 许可证。请确认许可证目录能够被容器挂载并在运行时访问。
-
----
-
 ## 第一次运行：推荐流程
 
 如果你是新手，推荐按下面顺序做一次小样本测试：
